@@ -8,6 +8,7 @@ Finally, the code is written for Python3, anyhow it could be easily adapted for 
 ### How to install dependencies and run the script
 
 ```console
+aws configure
 git clone https://github.com/cs-aware/WP3-data-collection-twitter.git
 sudo python3 -m pip install -r requirements.txt 
 python3 main.py
