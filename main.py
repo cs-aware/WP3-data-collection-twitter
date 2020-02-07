@@ -8,6 +8,7 @@ Finally, the code is written for Python3, anyhow it could be easily adapted for 
 @author: Matteo Bregonzio
 """
 
+import sys
 import tweepy
 import csv
 import json
@@ -16,27 +17,65 @@ import os
 import glob
 import pandas as pd
 import datetime
+from datetime import date
 import boto3
 
-today = datetime.datetime.today().date().strftime("%Y%m%d")
+from stix2 import Bundle, ObservedData, IPv4Address, UserAccount, Bundle
+from stix2 import CustomObservable, properties
+
+
+@CustomObservable('x-csaware-social', [
+    ('source', properties.StringProperty()),
+    ('title', properties.StringProperty()),
+    ('text', properties.StringProperty()),
+    ('subject', properties.StringProperty()),
+])
+class CSAwareSocial():
+    pass
+
+
+BUCKET_NAME = "cs-aware-data-collection"
+CREDENTIALS = './credential.json'
+USERS = './users.json'
+PERIOD = 1  # Number of hours
+POST_LIMIT = 200
+
+
+today = date.today()
+today_str = today.strftime("%Y%m%d_%H%M")
+date_from = today - timedelta(hours=PERIOD)
+
 
 def load_customer_conf():
-    """
-    load config
-    """
-    with open('./credential.json') as f:
+    """Loads user credentials"""
+    with open(CREDENTIALS) as f:
         return json.load(f)
 
 
 def load_screen_names():
-    """
-    load users credentials
-    """
-    with open('./users.json') as f:
+    """Loads username list"""
+    with open(USERS) as f:
         return json.load(f)
 
 
+def to_aws(local_filename):
+    # Generate remote path
+    remote_path = "%d/%02d/%02d/REDDIT/%s" % (today.year, today.month, today.day, local_filename)
+    print("Uploading", remote_path)
+    # Upload to AWS
+    with open(local_filename, "rb") as f:
+        s3 = boto3.resource('s3')
+        s3.Object(BUCKET_NAME, remote_path).upload_fileobj(f)
+    # Delete local copy
+    os.remove(local_filename)
+
+
 def main():
+    #reload(sys)
+    #sys.setdefaultencoding("ISO-8859-1")
+
+    observed_data_list = []
+
     credential = load_customer_conf()
     user_to_follow = load_screen_names()['user_to_follow']
     df = pd.DataFrame()
@@ -52,17 +91,24 @@ def main():
     api = tweepy.API(auth)
 
     for screen_name in user_to_follow:
+        print(screen_name)
+        try:
+            statuses = api.user_timeline(screen_name=screen_name, count=POST_LIMIT)
+        except:
+            print("ERROR: user {} not found".format(screen_name))
+            continue
 
-        statuses = api.user_timeline(screen_name=screen_name, count=200)
         col0 = [statuses[i].user.name for i in range(len(statuses))]
         col1 = [statuses[i].created_at for i in range(len(statuses))]
         col2 = [statuses[i].text for i in range(len(statuses))]
         col3 = [statuses[i]._json for i in range(len(statuses))]
         
-        df=df.append(pd.DataFrame({"username":col0, "date":col1, "text":col2, "json":col3 }))
-        df = df[df['date'].dt.date == pd.to_datetime(today).date()]
+        #print(col2)
+        
+        df = df.append(pd.DataFrame({"username": screen_name.replace("@", ""), "name":col0, "date":col1, "text":col2, "json":col3 }))
+        df = df[df['date'] >= date_from]
     try:
-        old_df = pd.read_csv("output_{}.csv".format(today))
+        old_df = pd.read_csv("output_{}.csv".format(today_str))
     except:
         print("initialize new file of the day")
         old_df = pd.DataFrame()
@@ -70,25 +116,34 @@ def main():
     new_df = old_df.append(df)
     new_df.drop_duplicates(['username', 'date'], inplace=True)
     new_df["text"] = new_df["text"].apply(lambda x: x.encode("utf-8"))
-    new_df.to_csv("output_{}.csv".format(today), index=False, quoting = csv.QUOTE_ALL)
-    file_to_write = "output_{}.csv".format(today) 
+    new_df.to_csv("output_{}.csv".format(today_str), index=False, quoting = csv.QUOTE_ALL)
+    file_to_write = "output_{}.csv".format(today_str) 
     print(file_to_write)
-    year = today[:4]
-    month = today[4:6]
-    day = today[6:8] 
-    output_filename = str(year) + "/" +  str(month) + "/" + str(day) + "/" + "TWITTER/" +  file_to_write
-    print(output_filename)
 
-    # Create connection and write file in Amazon S3
-    with open(file_to_write, "rb") as f:
-        s3 = boto3.resource('s3')
-        s3.Object("cs-aware-data-collection", output_filename).upload_fileobj(f)
+    for index, row in new_df.iterrows():
+        args = {
+            'source': 'twitter',
+            'title': '',
+            'text': row['text'],
+            'subject': '',
+        }
+        observed_user = UserAccount(type='user-account', user_id=row['username'], display_name=row['name'])
+        observed_object = CSAwareSocial(**args, allow_custom=True)
+        objects = {"0": observed_user, "1": observed_object}
+        observed_data = ObservedData(first_observed=row['date'], last_observed=row['date'], number_observed=1, objects=objects, allow_custom=True)
+        observed_data_list.append(observed_data)
 
-    to_remove = glob.glob('output_*.csv')
-    for filename in to_remove:
-        os.remove(filename)
+    bundle = Bundle(observed_data_list)
 
-    return
+    stix_filename = file_to_write.replace('.csv', '.json')
+    stix_output = open(stix_filename, 'w')
+    stix_output.write(bundle.serialize(indent=4))
+    stix_output.close()
+
+    # Upload to AWS
+    to_aws(file_to_write)
+    to_aws(stix_filename)
+
 
 if __name__ == "__main__":
     main()

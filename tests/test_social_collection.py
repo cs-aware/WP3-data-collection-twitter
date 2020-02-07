@@ -3,7 +3,7 @@ import sys
 sys.path.insert(0, '../')
 
 from test_config import *
-from main import main as reddit_main
+from main import main as twitter_main
 from datetime import date
 
 
@@ -11,7 +11,7 @@ TEST_FILE = 'twitter.csv'
 
 
 def main():
-    reddit_main('../users.json')
+    twitter_main()
 
     today = date.today()
     path = "%d/%02d/%02d/TWITTER/" % (today.year, today.month, today.day)
