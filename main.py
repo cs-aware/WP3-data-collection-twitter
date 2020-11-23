@@ -17,12 +17,14 @@ import os
 import glob
 import pandas as pd
 import datetime
-from datetime import date
+from datetime import date, datetime, timedelta
 import boto3
 
 from stix2 import Bundle, ObservedData, IPv4Address, UserAccount, Bundle
 from stix2 import CustomObservable, properties
 
+from emojis import remove_emoji
+from unidecode import unidecode
 
 @CustomObservable('x-csaware-social', [
     ('source', properties.StringProperty()),
@@ -41,9 +43,9 @@ PERIOD = 1  # Number of hours
 POST_LIMIT = 200
 
 
-today = date.today()
-today_str = today.strftime("%Y%m%d_%H%M")
-date_from = today - timedelta(hours=PERIOD)
+now = datetime.now()
+today_str = now.strftime("%Y%m%d_%H%M")
+date_from = now - timedelta(hours=PERIOD)
 
 
 def load_customer_conf():
@@ -60,7 +62,7 @@ def load_screen_names():
 
 def to_aws(local_filename):
     # Generate remote path
-    remote_path = "%d/%02d/%02d/REDDIT/%s" % (today.year, today.month, today.day, local_filename)
+    remote_path = "%d/%02d/%02d/TWITTER/%s" % (now.year, now.month, now.day, local_filename)
     print("Uploading", remote_path)
     # Upload to AWS
     with open(local_filename, "rb") as f:
@@ -115,18 +117,26 @@ def main():
 
     new_df = old_df.append(df)
     new_df.drop_duplicates(['username', 'date'], inplace=True)
-    new_df["text"] = new_df["text"].apply(lambda x: x.encode("utf-8"))
     new_df.to_csv("output_{}.csv".format(today_str), index=False, quoting = csv.QUOTE_ALL)
     file_to_write = "output_{}.csv".format(today_str) 
     print(file_to_write)
-
+    
     for index, row in new_df.iterrows():
+        txt = remove_emoji(row['text'], remove_components=True)
+        
+        """
+        Replace unicode special characters with the nearest ASCII look-alike.
+        See alexis answer (https://stackoverflow.com/a/40692852).
+        """
+        txt = unidecode(txt)
+        
         args = {
             'source': 'twitter',
             'title': '',
-            'text': row['text'],
+            'text': txt,
             'subject': '',
         }
+        
         observed_user = UserAccount(type='user-account', user_id=row['username'], display_name=row['name'])
         observed_object = CSAwareSocial(**args, allow_custom=True)
         objects = {"0": observed_user, "1": observed_object}
